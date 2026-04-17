@@ -2,7 +2,7 @@ import subprocess
 import sys
 import numpy as np
 
-# 1. 自動檢查並安裝遺漏的庫 (對應作業 Debug 歷程)
+# 1. 自動安裝依賴庫 [cite: 12, 25]
 def install_dependencies():
     required = {'opencv-python', 'deepface', 'tf-keras'}
     for package in required:
@@ -25,7 +25,7 @@ class DetectorApp:
         self.root.withdraw()
 
     def analyze_face(self, frame):
-        """核心辨識邏輯：包含動態縮放與防重疊排版"""
+        """核心辨識邏輯：具備文字縮放與防重疊功能"""
         try:
             img_w = frame.shape[1]
             font_scale = img_w / 1000.0 * 0.7 
@@ -36,82 +36,80 @@ class DetectorApp:
                                       enforce_detection=False,
                                       detector_backend='opencv')
             
-            # 防重疊排序
-            results = sorted(results, key=lambda x: x['region']['y'])
-            
-            for i, res in enumerate(results):
+            results = sorted(results, key=lambda x: x['region']['x'])
+            occupied_regions = []
+
+            for res in results:
                 x, y, w, h = res['region']['x'], res['region']['y'], res['region']['w'], res['region']['h']
                 label = f"{res['dominant_gender']}, {res['age']}y, {res['dominant_emotion']}"
-                
                 cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), thickness)
                 
-                # 樓層式偏移排版
-                y_offset = int(15 * font_scale)
-                if i % 2 == 1:
-                    y_offset += int(40 * font_scale)
-                
-                # 繪製文字底色背景
                 (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
-                cv2.rectangle(frame, (x, y - y_offset - text_h), (x + text_w, y - y_offset + 5), (0, 0, 0), -1)
+                curr_y = y - 10
+                while True:
+                    collision = False
+                    for (ox, oy, ow, oh) in occupied_regions:
+                        if not (x + text_w < ox or x > ox + ow):
+                            if abs(curr_y - oy) < (text_h + 10):
+                                collision = True
+                                break
+                    if collision:
+                        curr_y -= (text_h + 25)
+                    else:
+                        break
                 
-                cv2.putText(frame, label, (x, y - y_offset), 
-                            cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 0), thickness)
+                occupied_regions.append((x, curr_y, text_w, text_h))
+                cv2.rectangle(frame, (x, curr_y - text_h - 5), (x + text_w, curr_y + 5), (0, 0, 0), -1)
+                cv2.putText(frame, label, (x, curr_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 0), thickness)
             
-            cv2.putText(frame, f"Count: {len(results)}", (int(20 * font_scale), int(50 * font_scale)), 
-                        cv2.FONT_HERSHEY_DUPLEX, font_scale * 1.2, (255, 0, 0), thickness)
+            cv2.putText(frame, f"Count: {len(results)}", (int(20*font_scale), int(50*font_scale)), 
+                        cv2.FONT_HERSHEY_DUPLEX, font_scale*1.2, (255, 0, 0), thickness)
             return frame
-        except Exception as e:
+        except Exception:
             return frame
 
     def process_image(self):
-        """處理圖片模式 (支援中文與自動縮放)"""
+        """圖片模式：支援中文路徑與縮放 [cite: 17]"""
         file_path = filedialog.askopenfilename(title="選擇圖片", filetypes=[("Image Files", "*.jpg *.png *.jpeg")])
         if file_path:
             img_array = np.fromfile(file_path, np.uint8)
             img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-
             if img is not None:
                 result_img = self.analyze_face(img)
                 win_name = "Image Result"
                 cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
-                
                 h, w = result_img.shape[:2]
-                if w > 1280:
-                    cv2.resizeWindow(win_name, 1280, int(h * (1280 / w)))
-                else:
-                    cv2.resizeWindow(win_name, w, h)
-
+                cv2.resizeWindow(win_name, 1280, int(h * (1280 / w)) if w > 1280 else h)
                 cv2.imshow(win_name, result_img)
                 cv2.waitKey(0)
                 cv2.destroyAllWindows()
 
     def process_video(self, source=0):
-        """處理影片或視訊模式"""
+        """影片/攝像頭模式：含鏡頭錯誤檢查 [cite: 17]"""
         if source is None:
             source = filedialog.askopenfilename(title="選擇影片", filetypes=[("Video Files", "*.mp4 *.avi *.mov")])
             if not source: return
-
+        
         cap = cv2.VideoCapture(source)
-        cv2.namedWindow("AI Detection", cv2.WINDOW_NORMAL)
-        cv2.resizeWindow("AI Detection", 1280, 720)
+        if not cap.isOpened():
+            print(f"\n[錯誤] 無法開啟來源 {source}，請檢查硬體連接。")
+            return
 
+        cv2.namedWindow("Detection", cv2.WINDOW_NORMAL)
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret: break
-            processed_frame = self.analyze_face(frame)
-            cv2.imshow("AI Detection", processed_frame)
+            processed = self.analyze_face(frame)
+            cv2.imshow("Detection", processed)
             if cv2.waitKey(1) & 0xFF == ord('q'): break
         cap.release()
         cv2.destroyAllWindows()
 
     def main_menu(self):
-        """主選單介面"""
+        """主選單介面 [cite: 11]"""
         while True:
             print("\n--- AI 人臉屬性辨識系統 ---")
-            print("1. 辨識圖片檔案")
-            print("2. 辨識影片檔案")
-            print("3. 開啟即時攝像頭")
-            print("4. 退出")
+            print("1. 辨識圖片檔案\n2. 辨識影片檔案\n3. 開啟即時攝像頭\n4. 退出")
             choice = input("請選擇功能 (1-4): ")
             if choice == '1': self.process_image()
             elif choice == '2': self.process_video(source=None)
