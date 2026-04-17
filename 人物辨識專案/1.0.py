@@ -25,34 +25,44 @@ class DetectorApp:
         self.root.withdraw()
 
     def analyze_face(self, frame):
-        """只負責 AI 分析，回傳結果資料庫"""
+        """只負責 AI 分析，改用 SSD 引擎減少誤判"""
         try:
-            return DeepFace.analyze(frame, actions=['age', 'gender', 'emotion'],
-                                   enforce_detection=False, detector_backend='opencv')
-        except:
+            # 將 detector_backend 改為 'ssd'，它比 opencv 精準很多，且比 retinaface 快
+            return DeepFace.analyze(frame, 
+                                   actions=['age', 'gender', 'emotion'],
+                                   enforce_detection=False, 
+                                   detector_backend='ssd') # 這裡從 'opencv' 改為 'ssd'
+        except Exception as e:
+            # print(f"分析錯誤: {e}") # 除錯用
             return []
 
     def draw_results(self, frame, results):
-        """負責把分析結果畫在畫面上 (包含防重疊與動態縮放)"""
-        if not results: return frame
+        """強化版繪圖：確保有偵測到臉就一定會畫框"""
+        if not results or len(results) == 0: return frame
         
         img_w = frame.shape[1]
         font_scale = img_w / 1000.0 * 0.7 
         thickness = max(1, int(img_w / 500))
         
-        # 根據 X 座標排序
         results_sorted = sorted(results, key=lambda x: x['region']['x'])
         occupied_regions = []
 
         for res in results_sorted:
-            x, y, w, h = res['region']['x'], res['region']['y'], res['region']['w'], res['region']['h']
-            label = f"{res['dominant_gender']}, {res['age']}y, {res['dominant_emotion']}"
+            # 取得位置
+            region = res.get('region', {})
+            x, y, w, h = region.get('x', 0), region.get('y', 0), region.get('w', 0), region.get('h', 0)
             
+            # 安全取得標籤資訊，若無資料則顯示 N/A
+            gender = res.get('dominant_gender', 'N/A')
+            age = res.get('age', '??')
+            emotion = res.get('dominant_emotion', 'N/A')
+            label = f"{gender}, {age}y, {emotion}"
+            
+            # 1. 先畫方框 (保證一定會出現)
             cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), thickness)
             
+            # 2. 計算不重疊位置
             (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
-            
-            # 自動找尋不重疊的高度
             curr_y = y - 10
             while True:
                 collision = False
@@ -63,14 +73,15 @@ class DetectorApp:
                 if collision: curr_y -= (text_h + 25)
                 else: break
             
+            # 紀錄並畫出標籤
             occupied_regions.append((x, curr_y, text_w, text_h))
             cv2.rectangle(frame, (x, curr_y - text_h - 5), (x + text_w, curr_y + 5), (0, 0, 0), -1)
             cv2.putText(frame, label, (x, curr_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 0), thickness)
         
+        # 標註總人數
         cv2.putText(frame, f"Count: {len(results)}", (int(20*font_scale), int(50*font_scale)), 
                     cv2.FONT_HERSHEY_DUPLEX, font_scale*1.2, (255, 0, 0), thickness)
         return frame
-
     def process_image(self):
         """圖片辨識模式"""
         file_path = filedialog.askopenfilename(title="選擇圖片", filetypes=[("Image Files", "*.jpg *.png *.jpeg")])
