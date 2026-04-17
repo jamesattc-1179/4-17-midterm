@@ -2,9 +2,9 @@ import subprocess
 import sys
 import numpy as np
 
-# 1. 自動安裝依賴庫
+# 1. 自動安裝依賴庫 (確保老師或同學拿去跑時也能自動設定環境)
 def install_dependencies():
-    required = {'opencv-python', 'deepface', 'tf-keras'}
+    required = {'opencv-python', 'deepface', 'tf-keras', 'mediapipe'}
     for package in required:
         try:
             __import__(package.replace('-', '_'))
@@ -25,63 +25,70 @@ class DetectorApp:
         self.root.withdraw()
 
     def analyze_face(self, frame):
-        """只負責 AI 分析，改用 SSD 引擎減少誤判"""
+        """核心辨識邏輯：使用最靈敏引擎並確保回傳資料"""
         try:
-            # 將 detector_backend 改為 'ssd'，它比 opencv 精準很多，且比 retinaface 快
+            # 換回 opencv 確保靈敏度，enforce_detection=False 確保不崩潰
             return DeepFace.analyze(frame, 
                                    actions=['age', 'gender', 'emotion'],
                                    enforce_detection=False, 
-                                   detector_backend='ssd') # 這裡從 'opencv' 改為 'ssd'
+                                   detector_backend='opencv') 
         except Exception as e:
-            # print(f"分析錯誤: {e}") # 除錯用
             return []
 
     def draw_results(self, frame, results):
-        """強化版繪圖：確保有偵測到臉就一定會畫框"""
-        if not results or len(results) == 0: return frame
+        """強化繪圖：過濾雜訊並保證顯示文字"""
+        if not results: return frame
         
         img_w = frame.shape[1]
         font_scale = img_w / 1000.0 * 0.7 
         thickness = max(1, int(img_w / 500))
         
-        results_sorted = sorted(results, key=lambda x: x['region']['x'])
+        results_sorted = sorted(results, key=lambda x: x.get('region', {}).get('x', 0))
         occupied_regions = []
 
         for res in results_sorted:
-            # 取得位置
             region = res.get('region', {})
             x, y, w, h = region.get('x', 0), region.get('y', 0), region.get('w', 0), region.get('h', 0)
             
-            # 安全取得標籤資訊，若無資料則顯示 N/A
-            gender = res.get('dominant_gender', 'N/A')
+            # --- 關鍵優化 1：過濾衣服褶皺 (褶皺通常寬度或高度會小於人臉常態) ---
+            # 如果是遠景照片，可以改小一點 (如 40)；近景則維持 60-80
+            if w < 50 or h < 50: 
+                continue
+
+            # 安全取得資訊，避免 Key 缺失導致沒畫面
+            gender = res.get('dominant_gender', 'Processing')
             age = res.get('age', '??')
-            emotion = res.get('dominant_emotion', 'N/A')
+            emotion = res.get('dominant_emotion', '...')
             label = f"{gender}, {age}y, {emotion}"
             
-            # 1. 先畫方框 (保證一定會出現)
+            # 畫人臉框 (亮綠色)
             cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), thickness)
             
-            # 2. 計算不重疊位置
+            # --- 關鍵優化 2：動態文字位置校正 ---
             (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
             curr_y = y - 10
+            
+            # 防止文字出界（如果人在最上方，文字會跑到畫面外）
+            if curr_y < 30: curr_y = y + h + 30 
+            
+            # 防重疊邏輯
             while True:
                 collision = False
                 for (ox, oy, ow, oh) in occupied_regions:
                     if not (x + text_w < ox or x > ox + ow):
-                        if abs(curr_y - oy) < (text_h + 10):
+                        if abs(curr_y - oy) < (text_h + 15):
                             collision = True; break
                 if collision: curr_y -= (text_h + 25)
                 else: break
             
-            # 紀錄並畫出標籤
             occupied_regions.append((x, curr_y, text_w, text_h))
+            
+            # 畫文字底色與標籤 (增加對比度)
             cv2.rectangle(frame, (x, curr_y - text_h - 5), (x + text_w, curr_y + 5), (0, 0, 0), -1)
             cv2.putText(frame, label, (x, curr_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 255, 0), thickness)
         
-        # 標註總人數
-        cv2.putText(frame, f"Count: {len(results)}", (int(20*font_scale), int(50*font_scale)), 
-                    cv2.FONT_HERSHEY_DUPLEX, font_scale*1.2, (255, 0, 0), thickness)
         return frame
+
     def process_image(self):
         """圖片辨識模式"""
         file_path = filedialog.askopenfilename(title="選擇圖片", filetypes=[("Image Files", "*.jpg *.png *.jpeg")])
@@ -118,11 +125,9 @@ class DetectorApp:
             ret, frame = cap.read()
             if not ret: break
             
-            # 每 5 幀才進行一次重型運算
             if frame_count % 5 == 0:
                 last_results = self.analyze_face(frame)
             
-            # 每一幀都負責畫圖 (保持畫面流暢)
             processed = self.draw_results(frame, last_results)
             cv2.imshow("Detection", processed)
             frame_count += 1
